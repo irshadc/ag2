@@ -151,7 +151,7 @@ class GroupChat:
     select_speaker_auto_model_client_cls: Optional[Union[ModelClient, List[ModelClient]]] = None
     select_speaker_auto_llm_config: Optional[Union[Dict, Literal[False]]] = None
     role_for_select_speaker_messages: Optional[str] = "system"
-    context_variables: Optional[Dict] = None
+    context_variables: Optional[Dict] = field(default_factory=dict)
 
     _VALID_SPEAKER_SELECTION_METHODS = ["auto", "manual", "random", "round_robin", "swarm"]
     _VALID_SPEAKER_TRANSITIONS_TYPE = ["allowed", "disallowed", None]
@@ -286,8 +286,6 @@ class GroupChat:
             if not all(isinstance(agent, SwarmAgent) for agent in self.agents):
                 raise ValueError("All agents must be of type SwarmAgent when using the 'swarm' speaker selection method.")
             """
-            if not isinstance(self.context_variables, dict):
-                self.context_variables = {}
 
     @property
     def agent_names(self) -> List[str]:

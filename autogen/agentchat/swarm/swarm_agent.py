@@ -6,7 +6,7 @@ from openai.types.chat.chat_completion import ChatCompletion
 from pydantic import BaseModel
 
 from autogen.agentchat import Agent, ConversableAgent
-from autogen.function_utils import get_function_schema, remove_parameter_from_function_schema
+from autogen.function_utils import get_function_schema
 from autogen.oai import OpenAIWrapper
 
 
@@ -20,30 +20,19 @@ def parse_json_object(response: str) -> dict:
 __CONTEXT_VARIABLES_PARAM_NAME__ = "context_variables"
 
 
-class SwarmResult:
+class SwarmResult(BaseModel):
     """
     Encapsulates the possible return values for a swarm agent function.
 
     arguments:
-        values (str): The result values as a string. Can be many due to multiple tool calls.
+        values (str): The result values as a string.
         agent (SwarmAgent): The swarm agent instance, if applicable.
         context_variables (dict): A dictionary of context variables.
     """
 
-    values: List[str] = []
+    values: str = ""
     agent: Optional["SwarmAgent"] = None
     context_variables: dict = {}
-
-    def __init__(
-        self,
-        values: str,  # Text response, could be the next agent name as well
-        next_agent: str = None,  # The name of the next agent if known
-        context_variables: dict = {},
-    ) -> None:
-        self.values = values
-        self.next_agent = next_agent
-        self.context_variables = context_variables
-
 
 class SwarmAgent(ConversableAgent):
     def __init__(
@@ -82,6 +71,9 @@ class SwarmAgent(ConversableAgent):
     def update_context_variables(self, context_variables: Dict[str, Any]) -> None:
         pass
 
+    def __str__(self):
+        return f"SwarmAgent: {self.name}"
+
     def generate_reply_with_tool_calls(
         self,
         messages: Optional[List[Dict]] = None,
@@ -95,10 +87,11 @@ class SwarmAgent(ConversableAgent):
         if messages is None:
             messages = self._oai_messages[sender]
         response = self._generate_oai_reply_from_client(client, self._oai_system_message + messages, self.client_cache)
-
+        
+        print(response)
         if isinstance(response, str):
             return True, SwarmResult(
-                values=[response],
+                values=response,
                 next_agent=self.name,
             )
         elif isinstance(response, dict):
@@ -114,20 +107,11 @@ class SwarmAgent(ConversableAgent):
 
                             # Check if function has context_variables parameter
                             sig = signature(func)
-                            needs_context = __CONTEXT_VARIABLES_PARAM_NAME__ in sig.parameters
-
-                            if needs_context:
-                                # Parse existing arguments
-                                try:
-                                    current_args = json.loads(tool_call["function"]["arguments"])
-                                except json.JSONDecodeError:
-                                    current_args = {}
-
-                                # Inject context_variables
-                                updated_args = {"context_variables": self.context_variables, **current_args}
-
+                            if __CONTEXT_VARIABLES_PARAM_NAME__ in sig.parameters:
+                                current_args = json.loads(tool_call["function"]["arguments"])
+                                current_args[__CONTEXT_VARIABLES_PARAM_NAME__] = self.context_variables
                                 # Update the tool call with new arguments
-                                tool_call["function"]["arguments"] = json.dumps(updated_args)
+                                tool_call["function"]["arguments"] = json.dumps(current_args)
 
             _, func_response = self.generate_tool_calls_reply([response])
 
@@ -153,14 +137,23 @@ class SwarmAgent(ConversableAgent):
 
         f = get_function_schema(func, name=func._name, description=func._description)
 
-        # Remove the context_variable parameter from the function signature stored in self.llm_config["tools"]
-        # This is done to prevent the context_variable parameter from being passed to the function when it is called
-        # by the LLM
-        f_no_context_variable = remove_parameter_from_function_schema(f, __CONTEXT_VARIABLES_PARAM_NAME__)
-        self.update_tool_signature(f_no_context_variable, is_remove=False)
+        # Remove context_variables parameter from function schema
+        f_no_context = f.copy()
+        if __CONTEXT_VARIABLES_PARAM_NAME__ in f_no_context["function"]["parameters"]["properties"]:
+            del f_no_context["function"]["parameters"]["properties"][__CONTEXT_VARIABLES_PARAM_NAME__]
+        if "required" in f_no_context["function"]["parameters"]:
+            required = f_no_context["function"]["parameters"]["required"]
+            f_no_context["function"]["parameters"]["required"] = [param for param in required if param != __CONTEXT_VARIABLES_PARAM_NAME__]
+            # If required list is empty, remove it
+            if not f_no_context["function"]["parameters"]["required"]:
+                del f_no_context["function"]["parameters"]["required"]
 
+        self.update_tool_signature(f_no_context, is_remove=False)
         self.register_function({func._name: self._wrap_function(func)})
+        
 
     def add_functions(self, func_list: List[Callable]):
         for func in func_list:
             self.add_single_function(func)
+        
+        print(self.llm_config['tools'])
