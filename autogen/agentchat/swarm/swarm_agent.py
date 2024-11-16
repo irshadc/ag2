@@ -34,6 +34,11 @@ class SwarmResult(BaseModel):
     agent: Optional["SwarmAgent"] = None
     context_variables: dict = {}
 
+
+# 1.  SwarmResult should be a single instance, a single tool call can return one result only.
+# 2. In generate_reply_with_tool_calls, We only process the tool_responses from a single message from generate_tool_calls_reply
+
+
 class SwarmAgent(ConversableAgent):
     def __init__(
         self,
@@ -86,14 +91,14 @@ class SwarmAgent(ConversableAgent):
             return False, None
         if messages is None:
             messages = self._oai_messages[sender]
+
+        # print("messages", messages)
+        # print(self.llm_config['tools'])
+        # exit()
         response = self._generate_oai_reply_from_client(client, self._oai_system_message + messages, self.client_cache)
-        
-        print(response)
+
         if isinstance(response, str):
-            return True, SwarmResult(
-                values=response,
-                next_agent=self.name,
-            )
+            return True, response
         elif isinstance(response, dict):
             # Tool calls, inject context_variables back in to the response before executing the tools
             if "tool_calls" in response:
@@ -113,16 +118,16 @@ class SwarmAgent(ConversableAgent):
                                 # Update the tool call with new arguments
                                 tool_call["function"]["arguments"] = json.dumps(current_args)
 
-            _, func_response = self.generate_tool_calls_reply([response])
+            # Generate tool calls reply
+            _, tool_message = self.generate_tool_calls_reply([response])
 
-            return_values = []
-            for response in func_response["tool_responses"]:
-                return_values.append(response["content"])
-
-            return True, SwarmResult(
-                values=return_values,
-                next_agent=None,
-            )
+            # a tool_response example:
+            # {
+            #     "role": "tool",
+            #     "content": A str, or an object (SwarmResult, SwarmAgent, etc.)
+            #     "tool_call_id": <the tool call id>
+            # },
+            return True, [response] + tool_message["tool_responses"]
         else:
             raise ValueError("Invalid response type:", type(response))
 
@@ -143,17 +148,16 @@ class SwarmAgent(ConversableAgent):
             del f_no_context["function"]["parameters"]["properties"][__CONTEXT_VARIABLES_PARAM_NAME__]
         if "required" in f_no_context["function"]["parameters"]:
             required = f_no_context["function"]["parameters"]["required"]
-            f_no_context["function"]["parameters"]["required"] = [param for param in required if param != __CONTEXT_VARIABLES_PARAM_NAME__]
+            f_no_context["function"]["parameters"]["required"] = [
+                param for param in required if param != __CONTEXT_VARIABLES_PARAM_NAME__
+            ]
             # If required list is empty, remove it
             if not f_no_context["function"]["parameters"]["required"]:
                 del f_no_context["function"]["parameters"]["required"]
 
         self.update_tool_signature(f_no_context, is_remove=False)
-        self.register_function({func._name: self._wrap_function(func)})
-        
+        self.register_function({func._name: func})
 
     def add_functions(self, func_list: List[Callable]):
         for func in func_list:
             self.add_single_function(func)
-        
-        print(self.llm_config['tools'])

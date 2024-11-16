@@ -213,6 +213,7 @@ def get_missing_annotations(typed_signature: inspect.Signature, required: List[s
     unannotated_with_default = all_missing.difference(missing)
     return missing, unannotated_with_default
 
+
 def get_function_schema(f: Callable[..., Any], *, name: Optional[str] = None, description: str) -> Dict[str, Any]:
     """Get a JSON schema for a function as defined by the OpenAI API
 

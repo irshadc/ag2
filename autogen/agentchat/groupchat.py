@@ -24,6 +24,7 @@ from .agent import Agent
 from .contrib.capabilities import transform_messages
 from .conversable_agent import ConversableAgent
 from .swarm import SwarmAgent, SwarmResult
+from .user_proxy_agent import UserProxyAgent
 
 logger = logging.getLogger(__name__)
 
@@ -433,21 +434,37 @@ class GroupChat:
     def swarm_select_speaker(self, last_speaker: Agent, agents: Optional[List[Agent]] = None) -> Union[Agent, None]:
         """Select the next speaker using the swarm pattern. Note that this does not need to cater for when the agent is continuing to speak."""
         messages = self.messages
+        user_agent = None
+        for agent in agents:
+            if isinstance(agent, UserProxyAgent):
+                user_agent = agent
+                break
+
+        if user_agent is None:
+            raise ValueError("We need a UserProxyAgent to continue the conversation.")
 
         # Always start with the first speaker
         if len(messages) <= 1:
-            return last_speaker
-
+            print("aaaaaaa")
+            return user_agent
         last_message = messages[-1]
-
         # If the last message is a TRANSFER message, extract agent name and return them
-        if "content" in last_message and last_message["content"].startswith("TRANSFER:"):
-            agent_name = last_message["content"].split(":")[1].strip()
-            if self.agent_by_name(name=agent_name):
-                return self.agent_by_name(agent_name)
+        if last_message["role"] == "tool":
+            if "content" in last_message and last_message["content"].startswith("TRANSFER:"):
+                agent_name = last_message["content"].split(":")[1].strip()
+                if self.agent_by_name(name=agent_name):
+                    return self.agent_by_name(agent_name)
+            else:
+                # if the agent just call a tool and not transfer, return the last speaker
+                return last_speaker
+
+        if isinstance(last_speaker, SwarmAgent):
+            return user_agent
+        elif isinstance(last_speaker, UserProxyAgent):
+            return self.agent_by_name(name=messages[-2].get("name", ""))
 
         # Otherwise, return the agent before the previous one
-        return self.agent_by_name(name=messages[-2].get("name", ""))
+        raise ValueError("Something wrong with the speaker selection.")
 
     def _prepare_and_select_agents(
         self,
@@ -1159,6 +1176,33 @@ class GroupChatManager(ConversableAgent):
         """
         return self._last_speaker
 
+    def _process_reply_from_swarm(self, reply: Union[Dict, List[Dict]], groupchat: GroupChat) -> None:
+        # If we have a swarm reply, update context variables, and determine the next agent
+        if isinstance(reply, list):
+            pass
+        elif isinstance(reply, dict):
+            reply = [reply]
+        else:
+            return None
+        next_agent = None
+        for r in reply:
+            content = r.get("content")
+            if isinstance(content, SwarmResult):
+                if content.context_variables != {}:
+                    groupchat.context_variables.update(content.context_variables)
+                if content.next_agent is not None:
+                    next_agent = content.next_agent
+            elif isinstance(content, Agent):
+                next_agent = content
+        return next_agent
+
+    def _broadcast_message(self, groupchat: GroupChat, message: Dict, speaker: Agent) -> None:
+        # Broadcast the message to all agents except the speaker
+        groupchat.append(message, speaker)
+        for agent in groupchat.agents:
+            if agent != speaker:
+                self.send(message, agent, request_reply=False, silent=True)
+
     def run_chat(
         self,
         messages: Optional[List[Dict]] = None,
@@ -1183,7 +1227,6 @@ class GroupChatManager(ConversableAgent):
             # NOTE: We do not also append to groupchat.messages,
             # since groupchat handles its own introductions
 
-        # Swarm
         if self.groupchat.speaker_selection_method == "swarm":
             config.allow_repeat_speaker = True  # Swarms allow the last speaker to be the next speaker
 
@@ -1193,14 +1236,17 @@ class GroupChatManager(ConversableAgent):
                 a.client_cache = self.client_cache
         for i in range(groupchat.max_round):
             self._last_speaker = speaker
-            groupchat.append(message, speaker)
-            # broadcast the message to all agents except the speaker
-            for agent in groupchat.agents:
-                if agent != speaker:
-                    self.send(message, agent, request_reply=False, silent=True)
-            if self._is_termination_msg(message) or i == groupchat.max_round - 1:
-                # The conversation is over or it's the last round
-                break
+            if isinstance(message, list):
+                for m in message:
+                    self._broadcast_message(groupchat, m, speaker)
+                for m in message:
+                    if self._is_termination_msg(m) or i == groupchat.max_round - 1:
+                        break
+            else:
+                self._broadcast_message(groupchat, message, speaker)
+                if self._is_termination_msg(message) or i == groupchat.max_round - 1:
+                    # The conversation is over or it's the last round
+                    break
             try:
                 if next_speaker:
                     # Speaker has already been selected (swarm)
@@ -1214,32 +1260,14 @@ class GroupChatManager(ConversableAgent):
                     iostream.print(colored(f"\nNext speaker: {speaker.name}\n", "green"), flush=True)
 
                 # Update the context_variables on the agent
-                if self.groupchat.speaker_selection_method == "swarm" and isinstance(speaker, SwarmAgent):
+                if isinstance(speaker, SwarmAgent):
                     speaker.context_variables.update(groupchat.context_variables)
 
                 # let the speaker speak
-                reply = speaker.generate_reply(sender=self)
+                reply = speaker.generate_reply(sender=self)  # reply must be a dict or a list of dicts(only for swarm)
 
-                # If we have a swarm reply, update context variables
-                if isinstance(reply, SwarmResult):
-                    if reply.context_variables:
-                        self.groupchat.context_variables.update(reply.context_variables)
-
-                    reply_value = "\n".join(reply.values)
-
-                    if reply.next_agent is not None:
-                        next_speaker = groupchat.agent_by_name(reply.next_agent)
-                    else:
-                        # If there are multiple replies, it indicates multiple tool calls
-                        # In this case we will see if any of the replies contains an agent Transfer and set the reply to that
-                        if len(reply.values) > 1:
-                            for content in reply.values:
-                                if content in groupchat.agent_names:
-                                    reply_value = content
-                                    break
-
-                    # Replaces the swarm result with string value
-                    reply = reply_value
+                if groupchat.speaker_selection_method == "swarm":
+                    next_speaker = self._process_reply_from_swarm(reply, speaker)  # process the swarm reply: Update
 
             except KeyboardInterrupt:
                 # let the admin agent speak if interrupted
@@ -1268,8 +1296,13 @@ class GroupChatManager(ConversableAgent):
                 reply["content"] = self.clear_agents_history(reply, groupchat)
 
             # The speaker sends the message without requesting a reply
-            speaker.send(reply, self, request_reply=False, silent=silent)
-            message = self.last_message(speaker)
+            if isinstance(reply, list):
+                for r in reply:
+                    speaker.send(r, self, request_reply=False, silent=silent)
+                message = reply
+            else:
+                speaker.send(reply, self, request_reply=False, silent=silent)
+                message = self.last_message(speaker)
         if self.client_cache is not None:
             for a in groupchat.agents:
                 a.client_cache = a.previous_cache
