@@ -1189,11 +1189,19 @@ class GroupChatManager(ConversableAgent):
             content = r.get("content")
             if isinstance(content, SwarmResult):
                 if content.context_variables != {}:
-                    groupchat.context_variables.update(content.context_variables)
-                if content.next_agent is not None:
-                    next_agent = content.next_agent
+                    self.groupchat.context_variables.update(content.context_variables)
+                if content.agent is not None:
+                    next_agent = content.agent
+
+                # Change content back to a string for consistency with messages
+                r["content"] = content.values
             elif isinstance(content, Agent):
                 next_agent = content
+
+                # Change content back to a string
+                # Consider adjusting this message, e.g. f"Transfer to {next_agent.name}"
+                r["content"] = next_agent.name
+
         return next_agent
 
     def _broadcast_message(self, groupchat: GroupChat, message: Dict, speaker: Agent) -> None:
