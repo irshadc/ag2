@@ -8,7 +8,7 @@ import functools
 import inspect
 import json
 from logging import getLogger
-from typing import Any, Callable, Dict, ForwardRef, List, Optional, Set, Tuple, Type, TypeVar, Union, cast
+from typing import Any, Callable, Dict, ForwardRef, List, Optional, Set, Tuple, Type, TypeVar, Union
 
 from pydantic import BaseModel, Field
 from typing_extensions import Annotated, Literal, get_args, get_origin
