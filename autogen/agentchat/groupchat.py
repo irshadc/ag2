@@ -445,7 +445,10 @@ class GroupChat:
 
         # Always start with the first speaker
         if len(messages) <= 1:
-            print("aaaaaaa")
+            if last_speaker == user_agent:
+                for agent in agents:
+                    if isinstance(agent, SwarmAgent):
+                        return agent
             return user_agent
         last_message = messages[-1]
         # If the last message is a TRANSFER message, extract agent name and return them
@@ -1189,19 +1192,12 @@ class GroupChatManager(ConversableAgent):
             content = r.get("content")
             if isinstance(content, SwarmResult):
                 if content.context_variables != {}:
-                    self.groupchat.context_variables.update(content.context_variables)
+                    groupchat.context_variables.update(content.context_variables)
                 if content.agent is not None:
                     next_agent = content.agent
-
-                # Change content back to a string for consistency with messages
-                r["content"] = content.values
             elif isinstance(content, Agent):
                 next_agent = content
-
-                # Change content back to a string
-                # Consider adjusting this message, e.g. f"Transfer to {next_agent.name}"
-                r["content"] = next_agent.name
-
+            r["content"] = str(r["content"])
         return next_agent
 
     def _broadcast_message(self, groupchat: GroupChat, message: Dict, speaker: Agent) -> None:
@@ -1275,7 +1271,7 @@ class GroupChatManager(ConversableAgent):
                 reply = speaker.generate_reply(sender=self)  # reply must be a dict or a list of dicts(only for swarm)
 
                 if groupchat.speaker_selection_method == "swarm":
-                    next_speaker = self._process_reply_from_swarm(reply, speaker)  # process the swarm reply: Update
+                    next_speaker = self._process_reply_from_swarm(reply, groupchat)  # process the swarm reply: Update
 
             except KeyboardInterrupt:
                 # let the admin agent speak if interrupted
@@ -1322,7 +1318,6 @@ class GroupChatManager(ConversableAgent):
         messages: Optional[List[Dict]] = None,
         sender: Optional[Agent] = None,
         config: Optional[GroupChat] = None,
-        context_variables: Optional[Dict] = {},  # For Swarms
     ):
         """Run a group chat asynchronously."""
         if messages is None:

@@ -13,7 +13,8 @@ import logging
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 from unittest import TestCase, mock
-
+import sys
+import os
 import pytest
 from test_assistant_agent import KEY_LOC, OAI_CONFIG_LIST
 
@@ -21,7 +22,79 @@ import autogen
 from autogen import Agent, AssistantAgent, GroupChat, GroupChatManager
 from autogen.agentchat.contrib.capabilities import transform_messages, transforms
 from autogen.exception_utils import AgentNameConflict, UndefinedNextAgent
+from autogen.agentchat.swarm.swarm_agent import SwarmAgent, SwarmResult
 
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+from conftest import skip_openai  # noqa: E402
+
+try:
+    from openai import OpenAI
+except ImportError:
+    skip = True
+else:
+    skip = False or skip_openai
+
+
+@pytest.mark.skipif(skip, reason="openai not installed OR requested to skip")
+def test_swarm_agent():
+    context_variables = {"1": False, "2": False, "3": False}
+
+    def update_context_1(context_variables: dict) -> str:
+        context_variables["1"] = True
+        return SwarmResult(value="success", context_variables=context_variables)
+
+    def update_context_2_and_transfer_to_3(context_variables: dict) -> str:
+        context_variables["2"] = True
+        return SwarmResult(value="success", context_variables=context_variables, agent=agent_3)
+
+    def update_context_3(context_variables: dict) -> str:
+        context_variables["3"] = True
+        return SwarmResult(value="success", context_variables=context_variables)
+
+    def transfer_to_agent_2() -> SwarmAgent:
+        return agent_2
+
+    agent_1 = SwarmAgent(
+        name="Agent_1",
+        system_message="You are Agent 1, first, call the function to update context 1, and transfer to Agent 2",
+        llm_config=llm_config,
+        functions=[update_context_1, transfer_to_agent_2],
+    )
+
+    agent_2 = SwarmAgent(
+        name="Agent_2",
+        system_message="You are Agent 2, call the function that updates context 2 and transfer to Agent 3",
+        llm_config=llm_config,
+        functions=[update_context_2_and_transfer_to_3],
+    )
+
+    agent_3 = SwarmAgent(
+        name="Agent_3",
+        system_message="You are Agent 3, first, call the function to update context 3, and then reply TERMINATE",
+        llm_config=llm_config,
+        functions=[update_context_3],
+    )
+
+    user = UserProxyAgent(
+        name="Human_User",
+        system_message="Human user",
+        human_input_mode="ALWAYS",
+        code_execution_config=False,
+    )
+    groupchat = GroupChat(
+        agents=[user, agent_1, agent_2, agent_3],
+        messages=[],
+        max_round=10,
+        speaker_selection_method="swarm",
+        context_variables=context_variables,
+    )
+    manager = GroupChatManager(groupchat=groupchat, llm_config=None)
+
+    chat_result = user.initiate_chat(manager, message="start")
+
+    assert context_variables["1"] == True, "Expected context_variables['1'] to be True"
+    assert context_variables["2"] == True, "Expected context_variables['2'] to be True"
+    assert context_variables["3"] == True, "Expected context_variables['3'] to be True"
 
 def test_func_call_groupchat():
     agent1 = autogen.ConversableAgent(

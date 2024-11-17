@@ -29,15 +29,15 @@ class SwarmResult(BaseModel):
         agent (SwarmAgent): The swarm agent instance, if applicable.
         context_variables (dict): A dictionary of context variables.
     """
-
     values: str = ""
     agent: Optional["SwarmAgent"] = None
     context_variables: dict = {}
 
+    class Config:  # Add this inner class
+        arbitrary_types_allowed = True
 
-# 1.  SwarmResult should be a single instance, a single tool call can return one result only.
-# 2. In generate_reply_with_tool_calls, We only process the tool_responses from a single message from generate_tool_calls_reply
-
+    def __str__(self):
+        return self.values
 
 class SwarmAgent(ConversableAgent):
     def __init__(
@@ -92,9 +92,6 @@ class SwarmAgent(ConversableAgent):
         if messages is None:
             messages = self._oai_messages[sender]
 
-        # print("messages", messages)
-        # print(self.llm_config['tools'])
-        # exit()
         response = self._generate_oai_reply_from_client(client, self._oai_system_message + messages, self.client_cache)
 
         if isinstance(response, str):
@@ -120,13 +117,6 @@ class SwarmAgent(ConversableAgent):
 
             # Generate tool calls reply
             _, tool_message = self.generate_tool_calls_reply([response])
-
-            # a tool_response example:
-            # {
-            #     "role": "tool",
-            #     "content": A str, or an object (SwarmResult, SwarmAgent, etc.)
-            #     "tool_call_id": <the tool call id>
-            # },
             return True, [response] + tool_message["tool_responses"]
         else:
             raise ValueError("Invalid response type:", type(response))
